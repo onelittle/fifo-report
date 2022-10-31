@@ -38,6 +38,20 @@ type NordnetRow = {
   // Valuta: string
 }
 
+interface Purchase {
+  isin: string
+  ticker: string
+  totalPrice: Money
+  quantity: number
+  price: Money
+  dateIso8601: string
+}
+
+interface Sale extends Purchase {
+  salePrice: Money
+  soldDateIso8601: string
+}
+
 const readable = process.stdin.setEncoding("utf16le")
 
 let chunks: string[] = []
@@ -56,14 +70,6 @@ readable.on("end", () => {
     header: true,
   })
 
-  interface Purchase {
-    isin: string
-    ticker: string
-    quantity: Money
-    price: Money
-    dateIso8601: string
-  }
-
   const stocksPurchased: Record<ISIN, Purchase[]> = {}
 
   result.data.forEach((row) => {
@@ -72,28 +78,28 @@ readable.on("end", () => {
       case "KJØP, BYTTE AV FOND":
         const ticker = row.Verdipapir
         const isin = row.ISIN
-        const quantity = Dinero({
+        const totalPrice = Dinero({
           amount: Math.round(
-            parseFloat(row.Antall.replace(/[^0-9,.]/, "").replace(/,/, ".")) *
-              10000
+            parseFloat(row.Beløp.replace(/[^0-9,.]/g, "").replace(/,/, ".")) * 100
           ),
           currency: row.Valuta,
-          precision: 4,
+          precision: 2,
         })
-        const price = Dinero({
-          amount: Math.round(
-            parseFloat(row.Kurs.replace(/[^0-9,.]/, "").replace(/,/, ".")) *
-              1000
-          ),
-          currency: row.Valuta,
-          precision: 3,
-        })
+        const quantity = Math.round(
+          parseFloat(row.Antall.replace(/[^0-9,.]/g, "").replace(/,/, ".")) *
+            10000
+        )
+        const price = totalPrice
+          .convertPrecision(4)
+          .multiply(10000)
+          .divide(quantity)
         const dateIso8601 = row.Handelsdag
         const purchases = stocksPurchased[isin] || []
         stocksPurchased[isin] = purchases.concat({
           isin,
           ticker,
           quantity,
+          totalPrice,
           price,
           dateIso8601,
         })
@@ -118,31 +124,23 @@ readable.on("end", () => {
       return new Date(a.Handelsdag).getTime() - new Date(b.Handelsdag).getTime()
     })
 
-  interface Sale extends Purchase {
-    salePrice: Money
-    soldDateIso8601: string
-  }
-
   // Process sales
   const stocksSold: Record<ISIN, Sale[]> = {}
 
   for (let i = 0; i < orderedSalesAndSwapsRows.length; i++) {
     const row = orderedSalesAndSwapsRows[i]
 
-    const salePrice: Money = Dinero({
+    const totalSalePrice: Money = Dinero({
       amount: Math.round(
-        parseFloat(row.Kurs.replace(/[^0-9,.]/, "").replace(/,/, ".")) * 1000
+        parseFloat(row.Beløp.replace(/[^0-9,.]/g, "").replace(/,/, ".")) * 100
       ),
       currency: row.Valuta,
-      precision: 3,
+      precision: 2,
     })
-    let saleQuantity = Dinero({
-      amount: Math.round(
-        parseFloat(row.Antall.replace(/[^0-9,.]/, "").replace(/,/, ".")) * 10000
-      ),
-      currency: row.Valuta,
-      precision: 4,
-    })
+    let saleQuantity = Math.round(
+      parseFloat(row.Antall.replace(/[^0-9,.]/g, "").replace(/,/, ".")) * 10000
+    )
+    const salePrice = totalSalePrice.convertPrecision(4).multiply(10000).divide(saleQuantity)
     let selling = true
 
     while (selling) {
@@ -157,31 +155,35 @@ readable.on("end", () => {
         break
       }
 
+      const quantity = Math.min(saleQuantity, purchase.quantity)
+
       const saleDateIso8601 = row.Handelsdag
       const sale = {
         ...purchase,
+        totalPrice: purchase.price.convertPrecision(4).multiply(quantity).divide(10000),
         salePrice: salePrice,
         soldDateIso8601: saleDateIso8601,
       }
 
-      const quantity = Dinero.minimum([saleQuantity, purchase.quantity])
-      purchase.quantity = purchase.quantity.subtract(quantity)
-      saleQuantity = saleQuantity.subtract(quantity)
+      purchase.quantity -= quantity
+      saleQuantity -= quantity
 
-      if (purchase.quantity.isZero()) {
+      if (purchase.quantity === 0) {
         stocksPurchased[isin].shift()
+      } else {
+        purchase.totalPrice = purchase.totalPrice.subtract(purchase.price.convertPrecision(4).multiply(quantity).divide(10000))
       }
 
       stocksSold[isin] = stocksSold[isin] || []
       stocksSold[isin].push(sale)
 
-      if (saleQuantity.isZero()) selling = false
+      if (saleQuantity === 0) selling = false
     }
   }
 
   const soldAndBought = [
-    Object.values(stocksPurchased),
     Object.values(stocksSold),
+    Object.values(stocksPurchased),
   ].flat(3)
   soldAndBought.sort((a, b) => {
     return new Date(a.dateIso8601).getTime() - new Date(b.dateIso8601).getTime()
@@ -200,26 +202,23 @@ readable.on("end", () => {
     "Profit/loss",
   ].join(",")
 
-  console.log(header)
+  process.stdout.write(header + "\n")
 
   soldAndBought.forEach((data, i) => {
-    const purchaseAmount = data.price
-      .multiply(data.quantity.getAmount())
-      .divide(10000)
     const row: string[] = [
       i.toString(),
       data.isin,
       data.ticker,
       data.dateIso8601,
-      purchaseAmount.toFormat("$0.000"),
+      data.totalPrice.toFormat("$0.00"),
       data.price.toFormat("$0.000"),
-      data.quantity.toFormat("0.000"),
+      (data.quantity / 10000).toString(),
     ]
     if ("soldDateIso8601" in data) {
       let sale = data as Sale
       const profit = sale.salePrice
         .subtract(sale.price)
-        .multiply(data.quantity.getAmount())
+        .multiply(data.quantity)
         .divide(10000)
       row.push(
         sale.soldDateIso8601,
@@ -229,6 +228,7 @@ readable.on("end", () => {
     } else {
       row.push("", "", "")
     }
-    console.log(row.map((col) => `"${col}"`).join(","))
+    process.stdout.write(row.map((col) => `"${col}"`).join(","))
+    process.stdout.write("\n")
   })
 })

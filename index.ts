@@ -80,7 +80,8 @@ readable.on("end", () => {
         const isin = row.ISIN
         const totalPrice = Dinero({
           amount: Math.round(
-            parseFloat(row.Beløp.replace(/[^0-9,.]/g, "").replace(/,/, ".")) * 100
+            parseFloat(row.Beløp.replace(/[^0-9,.]/g, "").replace(/,/, ".")) *
+              100
           ),
           currency: row.Valuta,
           precision: 2,
@@ -140,7 +141,10 @@ readable.on("end", () => {
     let saleQuantity = Math.round(
       parseFloat(row.Antall.replace(/[^0-9,.]/g, "").replace(/,/, ".")) * 10000
     )
-    const salePrice = totalSalePrice.convertPrecision(4).multiply(10000).divide(saleQuantity)
+    const salePrice = totalSalePrice
+      .convertPrecision(4)
+      .multiply(10000)
+      .divide(saleQuantity)
     let selling = true
 
     while (selling) {
@@ -160,7 +164,11 @@ readable.on("end", () => {
       const saleDateIso8601 = row.Handelsdag
       const sale = {
         ...purchase,
-        totalPrice: purchase.price.convertPrecision(4).multiply(quantity).divide(10000),
+        quantity,
+        totalPrice: purchase.price
+          .convertPrecision(4)
+          .multiply(quantity)
+          .divide(10000),
         salePrice: salePrice,
         soldDateIso8601: saleDateIso8601,
       }
@@ -171,7 +179,9 @@ readable.on("end", () => {
       if (purchase.quantity === 0) {
         stocksPurchased[isin].shift()
       } else {
-        purchase.totalPrice = purchase.totalPrice.subtract(purchase.price.convertPrecision(4).multiply(quantity).divide(10000))
+        purchase.totalPrice = purchase.totalPrice.subtract(
+          purchase.price.convertPrecision(4).multiply(quantity).divide(10000)
+        )
       }
 
       stocksSold[isin] = stocksSold[isin] || []
